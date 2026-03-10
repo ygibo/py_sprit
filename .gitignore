@@ -1,0 +1,51 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and tooling caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE and OS files
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# PlantUML and generated document assets
+*.png
+*.svg
+*.pdf
+docs/samples/
+docs/context_map/
+docs/development/
+docs/usecases/
+docs/glossary/
+docs/sequence/
+docs/state_transition/
+docs/robustness/
+docs/requirements/
+docs/domain_model/
+artifacts/visualization/
+jsprit/
+jsprit/*
+# Local logs
+*.log
+
+# Local project guidance
+CLAUDE.md
