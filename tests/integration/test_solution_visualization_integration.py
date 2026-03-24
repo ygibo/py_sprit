@@ -65,6 +65,26 @@ def test_route_annotation_flow_supports_annotation_entries(runtime):
     assert returned.event is not None
 
 
+def test_solution_visualization_flow_supports_shipment_stops(runtime):
+    solution = make_solution(runtime, **make_problem_inputs(job_count=0, include_shipment=True))
+
+    route_map = runtime.solution_visualization.generate_route_map(solution=solution)
+    assert route_map.is_success is True
+    assert route_map.generated_route_map is not None
+    assert "shipment-1 pickup" in route_map.generated_route_map.content
+    assert "shipment-1 delivery" in route_map.generated_route_map.content
+
+    route_annotation = runtime.solution_visualization.generate_route_annotation(
+        solution=solution
+    )
+    assert route_annotation.is_success is True
+    assert route_annotation.generated_route_annotation is not None
+    assert route_annotation.generated_route_annotation.entries == (
+        "vehicle-1 stop 1: shipment-1 pickup",
+        "vehicle-1 stop 2: shipment-1 delivery",
+    )
+
+
 def test_generation_failure_propagates_to_return_services(runtime):
     solution = make_solution(runtime, **make_problem_inputs(vehicle_count=1, job_count=1))
     broken_solution = make_solution_with_nonfinite_location(solution)

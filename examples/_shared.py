@@ -3,11 +3,15 @@ from __future__ import annotations
 from py_sprit import (
     Capacity,
     FleetSize,
+    Job,
     Location,
     SearchCompletionResult,
     Service,
+    Shipment,
     Skills,
     TerminationCriterion,
+    TourActivity,
+    TourActivityKind,
     TimeWindow,
     Vehicle,
     VehicleRoute,
@@ -80,6 +84,35 @@ def make_service(
     )
 
 
+def make_shipment(
+    job_id: str,
+    *,
+    pickup_x: float,
+    pickup_y: float = 0.0,
+    delivery_x: float,
+    delivery_y: float = 0.0,
+    demand: int = 1,
+    tw_start: float = 0.0,
+    tw_end: float = 100.0,
+    service_duration: float = 0.0,
+    required_skills: tuple[str, ...] = (),
+) -> Shipment:
+    # Shipment reuses one demand/time-window/service profile for both pickup and delivery stops.
+    return Shipment(
+        id=job_id,
+        location=Location(id=f"{job_id}-pickup", x=pickup_x, y=pickup_y),
+        delivery_location=Location(
+            id=f"{job_id}-delivery",
+            x=delivery_x,
+            y=delivery_y,
+        ),
+        demand=Capacity.single(demand),
+        required_skills=Skills(frozenset(required_skills)),
+        time_window=TimeWindow(tw_start, tw_end),
+        service_duration=service_duration,
+    )
+
+
 def print_section(title: str) -> None:
     print(f"== {title} ==")
 
@@ -94,7 +127,7 @@ def define_problem(
     *,
     vehicle_types: tuple[VehicleType, ...],
     vehicles: tuple[Vehicle, ...],
-    jobs: tuple[Service, ...],
+    jobs: tuple[Job, ...],
     fleet_size: FleetSize = FleetSize.FINITE,
 ) -> VehicleRoutingProblem | None:
     # All samples walk the public problem_definition adapter in the same order.
@@ -200,9 +233,18 @@ def _print_route(route: VehicleRoute, *, show_activities: bool) -> None:
         return
     # Activity details are useful only for samples where time behavior matters.
     for activity in route.activities:
+        label = _activity_label(activity)
         print(
             "  "
-            f"{activity.job.id}: arrival={activity.arrival_time:.2f} "
+            f"{label}: arrival={activity.arrival_time:.2f} "
             f"start={activity.service_start_time:.2f} "
             f"end={activity.service_end_time:.2f}"
         )
+
+
+def _activity_label(activity: TourActivity) -> str:
+    if activity.activity_kind is TourActivityKind.PICKUP:
+        return f"{activity.job.id} pickup"
+    if activity.activity_kind is TourActivityKind.DELIVERY:
+        return f"{activity.job.id} delivery"
+    return activity.job.id

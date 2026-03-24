@@ -8,6 +8,7 @@ from py_sprit.domain.extension_contracts import ConstraintEvaluationContext, Con
 from py_sprit.domain.problem_definition import (
     Break,
     FleetSize,
+    Job,
     Service,
     Shipment,
     Vehicle,
@@ -63,6 +64,36 @@ def make_service(
     )
 
 
+def make_shipment(
+    shipment_id: str = "shipment-1",
+    *,
+    pickup_x: float = 5.0,
+    pickup_y: float = 0.0,
+    delivery_x: float | None = 10.0,
+    delivery_y: float | None = 0.0,
+    demand: int = 1,
+    tw_end: float = 100.0,
+    service_duration: float = 0.0,
+    required_skills: tuple[str, ...] = (),
+) -> Shipment:
+    delivery_location = None
+    if delivery_x is not None and delivery_y is not None:
+        delivery_location = make_location(
+            f"{shipment_id}-delivery",
+            delivery_x,
+            delivery_y,
+        )
+    return Shipment(
+        id=shipment_id,
+        location=make_location(f"{shipment_id}-pickup", pickup_x, pickup_y),
+        delivery_location=delivery_location,
+        demand=Capacity.single(demand),
+        required_skills=Skills(frozenset(required_skills)),
+        time_window=TimeWindow(0.0, tw_end),
+        service_duration=service_duration,
+    )
+
+
 def make_break(break_id: str = "break-1") -> Break:
     return Break(
         id=break_id,
@@ -79,6 +110,7 @@ def make_problem_inputs(
     demand: int = 1,
     with_break: bool = False,
     include_shipment: bool = False,
+    shipment_delivery_missing: bool = False,
     fleet_size: FleetSize = FleetSize.FINITE,
 ) -> dict[str, object]:
     vehicle_type = make_vehicle_type(capacity=vehicle_capacity)
@@ -86,16 +118,15 @@ def make_problem_inputs(
         make_vehicle(f"vehicle-{index + 1}", vehicle_type=vehicle_type)
         for index in range(vehicle_count)
     )
-    jobs = tuple(
+    jobs: tuple[Job, ...] = tuple(
         make_service(f"job-{index + 1}", x=float(index + 1), y=0.0, demand=demand)
         for index in range(job_count)
     )
     if include_shipment:
         jobs = jobs + (
-            Shipment(
-                id="shipment-1",
-                location=make_location("shipment-pickup", 5.0, 0.0),
-                delivery_location=make_location("shipment-delivery", 10.0, 0.0),
+            make_shipment(
+                delivery_x=None if shipment_delivery_missing else 10.0,
+                delivery_y=None if shipment_delivery_missing else 0.0,
             ),
         )
     breaks = (make_break(),) if with_break else ()
@@ -131,15 +162,10 @@ def make_solution(runtime, **kwargs):
 
 def make_solution_with_nonfinite_location(solution):
     route = solution.routes[0]
-    broken_job = replace(
-        route.jobs[0],
-        location=Location(id=f"{route.jobs[0].id}-broken", x=nan, y=route.jobs[0].location.y),
-    )
-    broken_activity = replace(route.activities[0], job=broken_job)
+    broken_location = Location(id=f"{route.activities[0].job.id}-broken", x=nan, y=route.activities[0].location.y)
     broken_route = replace(
         route,
-        jobs=(broken_job, *route.jobs[1:]),
-        activities=(broken_activity, *route.activities[1:]),
+        activities=(replace(route.activities[0], location=broken_location), *route.activities[1:]),
     )
     return replace(solution, routes=(broken_route, *solution.routes[1:]))
 

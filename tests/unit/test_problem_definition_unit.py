@@ -49,6 +49,49 @@ def test_problem_can_be_completed_validated_and_defined():
     assert definition.problem.status is ProblemDefinitionStatus.DEFINED
 
 
+def test_problem_completeness_accepts_shipment_with_delivery_location():
+    inputs = make_problem_inputs(job_count=0, include_shipment=True)
+    problem = VehicleRoutingProblemFactory().create(
+        initial_components=ProblemModelComponents(
+            vehicle_types=inputs["vehicle_types"],
+            vehicles=inputs["vehicles"],
+            jobs=inputs["jobs"],
+            transport_cost=EuclideanTransportCost(),
+            activity_costs=ZeroVehicleRoutingActivityCosts(),
+            fleet_size=inputs["fleet_size"],
+            breaks=inputs["breaks"],
+        )
+    )
+
+    completeness = ProblemModelCompletenessValidator().validate(problem)
+
+    assert completeness.is_success is True
+
+
+def test_problem_completeness_rejects_shipment_without_delivery_location():
+    inputs = make_problem_inputs(
+        job_count=0,
+        include_shipment=True,
+        shipment_delivery_missing=True,
+    )
+    problem = VehicleRoutingProblemFactory().create(
+        initial_components=ProblemModelComponents(
+            vehicle_types=inputs["vehicle_types"],
+            vehicles=inputs["vehicles"],
+            jobs=inputs["jobs"],
+            transport_cost=EuclideanTransportCost(),
+            activity_costs=ZeroVehicleRoutingActivityCosts(),
+            fleet_size=inputs["fleet_size"],
+            breaks=inputs["breaks"],
+        )
+    )
+
+    completeness = ProblemModelCompletenessValidator().validate(problem)
+
+    assert completeness.is_success is False
+    assert "Shipment.delivery_location" in completeness.missing_fields
+
+
 def test_problem_consistency_rejects_break_with_infinite_fleet():
     inputs = make_problem_inputs(with_break=True, fleet_size=FleetSize.INFINITE)
     problem = VehicleRoutingProblemFactory().create(

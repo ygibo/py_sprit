@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from py_sprit.domain.algorithm_execution import TerminationCriterion
+from py_sprit.domain.algorithm_execution import TerminationCriterion, TourActivityKind
 from py_sprit.domain.extension_contracts import ConstraintTargetDescriptor
 from tests.support import (
     TourActivityPenaltyConstraint,
@@ -51,13 +51,18 @@ def test_registered_constraint_affects_next_execute_search(runtime):
     assert completion.reason == "候補解を返せない"
 
     runtime_with_penalty = runtime
-    definition_with_penalty = define_problem(runtime_with_penalty, **make_problem_inputs(vehicle_count=1, job_count=1))
+    definition_with_penalty = define_problem(
+        runtime_with_penalty,
+        **make_problem_inputs(vehicle_count=1, job_count=1),
+    )
     runtime_with_penalty.extension_contracts.register_constraint(
         constraint=TourActivityPenaltyConstraint(5.0),
         purpose="soft penalty",
         target_descriptor=ConstraintTargetDescriptor(target_kind="tour_activity"),
     )
-    penalized = runtime_with_penalty.algorithm_execution.execute_search(problem=definition_with_penalty.problem)
+    penalized = runtime_with_penalty.algorithm_execution.execute_search(
+        problem=definition_with_penalty.problem
+    )
     assert penalized.is_success is False or penalized.best_solution is not None
 
 
@@ -97,3 +102,67 @@ def test_algorithm_execution_acceptance_path_returns_iteration_logs(runtime):
     assert completion.is_success is True
     assert completion.technical_log is not None
     assert len(completion.technical_log.iterations) == acceptance.termination_criterion.max_iterations
+
+
+def test_algorithm_execution_solves_shipment_problem_and_preserves_activity_order(runtime):
+    definition = define_problem(runtime, **make_problem_inputs(job_count=0, include_shipment=True))
+
+    completion = runtime.algorithm_execution.execute_search(
+        problem=definition.problem,
+        enable_technical_logs=True,
+    )
+
+    assert completion.is_success is True
+    assert completion.best_solution is not None
+    assert completion.technical_log is not None
+    route = completion.best_solution.routes[0]
+    assert len(route.jobs) == 1
+    assert route.jobs[0].id == "shipment-1"
+    assert [activity.activity_kind for activity in route.activities] == [
+        TourActivityKind.PICKUP,
+        TourActivityKind.DELIVERY,
+    ]
+
+
+def test_vehicle_route_constraint_counts_shipment_as_one_logical_job(runtime):
+    definition = define_problem(
+        runtime,
+        **make_problem_inputs(vehicle_count=1, job_count=0, include_shipment=True),
+    )
+    runtime.extension_contracts.register_constraint(
+        constraint=VehicleRouteJobLimitConstraint(limit=1),
+        purpose="allow one logical job per route",
+        target_descriptor=ConstraintTargetDescriptor(target_kind="vehicle_route"),
+    )
+
+    completion = runtime.algorithm_execution.execute_search(problem=definition.problem)
+
+    assert completion.is_success is True
+    assert completion.best_solution is not None
+    assert len(completion.best_solution.routes) == 1
+    assert len(completion.best_solution.routes[0].jobs) == 1
+    assert len(completion.best_solution.routes[0].activities) == 2
+
+
+def test_tour_activity_constraint_targets_both_shipment_stops(runtime):
+    definition = define_problem(
+        runtime,
+        **make_problem_inputs(vehicle_count=1, job_count=0, include_shipment=True),
+    )
+    baseline = runtime.algorithm_execution.execute_search(problem=definition.problem)
+    assert baseline.is_success is True
+    assert baseline.best_solution is not None
+
+    runtime.extension_contracts.register_constraint(
+        constraint=TourActivityPenaltyConstraint(7.5),
+        purpose="penalize shipment stops",
+        target_descriptor=ConstraintTargetDescriptor(
+            target_kind="tour_activity",
+            target_id="shipment-1",
+        ),
+    )
+    penalized = runtime.algorithm_execution.execute_search(problem=definition.problem)
+
+    assert penalized.is_success is True
+    assert penalized.best_solution is not None
+    assert penalized.best_solution.cost == baseline.best_solution.cost + 15.0

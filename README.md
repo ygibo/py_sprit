@@ -20,10 +20,11 @@ The current executable surface is an in-process runtime with four adapters:
 ### Supported problem types
 
 - VRP with `Service` jobs
+- VRP with `Shipment` jobs
 - Capacity-constrained VRP
 - Time-window-constrained VRP
 - Heterogeneous fleet with multiple vehicles, per-type capacities, and fixed costs
-- Skill-based assignment using `Vehicle.skills` and `Service.required_skills`
+- Skill-based assignment using `Vehicle.skills` and job `required_skills`
 - Runtime-registered custom constraints
 
 ### Current algorithm
@@ -40,6 +41,13 @@ The current executable surface is an in-process runtime with four adapters:
 - `VehicleType.fixed_cost`
 - Registered soft-constraint penalties
 - Unassigned-job penalty
+
+### Current shipment subset
+
+- `Shipment` is now runnable through the runtime API
+- A `Shipment` produces two `TourActivity` entries: `pickup` and `delivery`
+- `Shipment.delivery_location` is required
+- The current subset reuses one `demand`, `time_window`, `service_duration`, and `required_skills` definition across both stops
 
 ## Public Runtime API
 
@@ -190,12 +198,15 @@ Available examples:
   Medium-sized CVRP sample using bundled `vrpnc1`
 - `examples/run_visualization_sample.py`
   Writes `VisualizationArtifact`, `RouteMap`, and `RouteAnnotation` SVG files under `artifacts/visualization/`
+- `examples/run_shipment_vrp_sample.py`
+  Shipment-aware example showing pickup and delivery activities in the returned route
 
 ## Limitations
 
-- The current runnable job type is effectively `Service` only
-- `Shipment`, `Pickup`, and `Delivery` types exist but are not executable in search yet
+- Runnable job types are currently `Service` and `Shipment`
+- `Pickup` and `Delivery` types exist but are not executable in search yet
 - `Break` can be defined in the problem model but is rejected at search start
+- The current `Shipment` subset uses one shared operational profile across pickup and delivery stops rather than separate per-stop fields
 - `FleetSize.INFINITE` is validated as a type, but search only uses vehicles explicitly provided in `problem.vehicles`
 - No current support for `StateManager`, `ConstraintManager`, multiple strategy switching, regret insertion, listeners, FastAPI, or DB persistence
 - Visualization currently supports SVG only

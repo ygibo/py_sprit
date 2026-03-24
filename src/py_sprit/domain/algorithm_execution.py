@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 from enum import Enum
 from random import Random
@@ -14,10 +15,11 @@ from py_sprit.domain.problem_definition import (
     Job,
     ProblemDefinitionStatus,
     Service,
+    Shipment,
     Vehicle,
     VehicleRoutingProblem,
 )
-from py_sprit.domain.shared import Capacity
+from py_sprit.domain.shared import Capacity, Location
 
 
 class SearchExecutionStatus(str, Enum):
@@ -34,9 +36,17 @@ class TerminationCriterion:
             raise ValueError("max_iterations must be positive")
 
 
+class TourActivityKind(str, Enum):
+    SERVICE = "service"
+    PICKUP = "pickup"
+    DELIVERY = "delivery"
+
+
 @dataclass(frozen=True, slots=True)
 class TourActivity:
-    job: Service
+    job: Job
+    activity_kind: TourActivityKind
+    location: Location
     arrival_time: float
     service_start_time: float
     service_end_time: float
@@ -46,7 +56,7 @@ class TourActivity:
 @dataclass(frozen=True, slots=True)
 class VehicleRoute:
     vehicle: Vehicle
-    jobs: tuple[Service, ...]
+    jobs: tuple[Job, ...]
     activities: tuple[TourActivity, ...]
     cost: float
     end_time: float
@@ -240,6 +250,20 @@ class SolutionModelGateway:
         return self.gateway.return_solution(result)
 
 
+@dataclass(frozen=True, slots=True)
+class PlannedActivitySpec:
+    job: Job
+    activity_kind: TourActivityKind
+    location: Location
+
+
+@dataclass(frozen=True, slots=True)
+class SeededRouteAssignment:
+    vehicle: Vehicle
+    jobs: tuple[Job, ...]
+    planned_activities: tuple[PlannedActivitySpec, ...]
+
+
 @dataclass(slots=True)
 class RandomRuin:
     rng: Random
@@ -248,20 +272,47 @@ class RandomRuin:
     def ruin(
         self,
         solution: VehicleRoutingProblemSolution,
-    ) -> tuple[tuple[tuple[Vehicle, tuple[Service, ...]], ...], tuple[Service, ...]]:
-        assignments = [(route.vehicle, list(route.jobs)) for route in solution.routes]
-        assigned_jobs = [job for _, jobs in assignments for job in jobs]
+    ) -> tuple[tuple[SeededRouteAssignment, ...], tuple[Job, ...]]:
+        assignments = tuple(
+            SeededRouteAssignment(
+                vehicle=route.vehicle,
+                jobs=route.jobs,
+                planned_activities=tuple(
+                    PlannedActivitySpec(
+                        job=activity.job,
+                        activity_kind=activity.activity_kind,
+                        location=activity.location,
+                    )
+                    for activity in route.activities
+                ),
+            )
+            for route in solution.routes
+        )
+        assigned_jobs = [job for assignment in assignments for job in assignment.jobs]
         if not assigned_jobs:
-            return tuple((vehicle, tuple(jobs)) for vehicle, jobs in assignments), ()
+            return assignments, ()
         remove_count = max(1, int(len(assigned_jobs) * self.share))
         removed_jobs = tuple(
             self.rng.sample(assigned_jobs, min(remove_count, len(assigned_jobs)))
         )
         removed_ids = {job.id for job in removed_jobs}
         remaining = []
-        for vehicle, jobs in assignments:
-            remaining_jobs = tuple(job for job in jobs if job.id not in removed_ids)
-            remaining.append((vehicle, remaining_jobs))
+        for assignment in assignments:
+            remaining_jobs = tuple(
+                job for job in assignment.jobs if job.id not in removed_ids
+            )
+            remaining_activities = tuple(
+                activity
+                for activity in assignment.planned_activities
+                if activity.job.id not in removed_ids
+            )
+            remaining.append(
+                SeededRouteAssignment(
+                    vehicle=assignment.vehicle,
+                    jobs=remaining_jobs,
+                    planned_activities=remaining_activities,
+                )
+            )
         return tuple(remaining), removed_jobs
 
 
@@ -270,37 +321,77 @@ class BestInsertion:
     def insert_jobs(
         self,
         problem: VehicleRoutingProblem,
-        seeded_assignments: tuple[tuple[Vehicle, tuple[Service, ...]], ...],
-        jobs: tuple[Service, ...],
+        seeded_assignments: tuple[SeededRouteAssignment, ...],
+        jobs: tuple[Job, ...],
         registrations: tuple[ConstraintRegistration, ...],
     ) -> VehicleRoutingProblemSolution:
-        route_jobs = {vehicle.id: list(route_jobs) for vehicle, route_jobs in seeded_assignments}
-        vehicles = [vehicle for vehicle, _ in seeded_assignments] or list(problem.vehicles)
-        if not route_jobs:
-            route_jobs = {vehicle.id: [] for vehicle in vehicles}
+        vehicles = [assignment.vehicle for assignment in seeded_assignments] or list(
+            problem.vehicles
+        )
+        route_jobs = {
+            assignment.vehicle.id: list(assignment.jobs)
+            for assignment in seeded_assignments
+        }
+        route_activities = {
+            assignment.vehicle.id: list(assignment.planned_activities)
+            for assignment in seeded_assignments
+        }
+        for vehicle in vehicles:
+            route_jobs.setdefault(vehicle.id, [])
+            route_activities.setdefault(vehicle.id, [])
+
         unassigned: list[Job] = []
         for job in jobs:
-            best_choice: tuple[float, Vehicle, int] | None = None
+            if not _is_executable_job(job):
+                unassigned.append(job)
+                continue
+            best_choice: tuple[float, Vehicle, list[Job], list[PlannedActivitySpec]] | None = (
+                None
+            )
             for vehicle in vehicles:
                 current_jobs = route_jobs.setdefault(vehicle.id, [])
-                for position in range(len(current_jobs) + 1):
-                    candidate_jobs = tuple(current_jobs[:position] + [job] + current_jobs[position:])
-                    candidate_route = evaluate_route(problem, vehicle, candidate_jobs, registrations)
+                current_activities = route_activities.setdefault(vehicle.id, [])
+                for candidate_activities in _iter_planned_insertions(
+                    tuple(current_activities),
+                    job,
+                ):
+                    candidate_jobs = tuple([*current_jobs, job])
+                    candidate_route = evaluate_route(
+                        problem,
+                        vehicle,
+                        candidate_jobs,
+                        registrations,
+                        planned_activities=candidate_activities,
+                    )
                     if candidate_route is None:
                         continue
                     if best_choice is None or candidate_route.cost < best_choice[0]:
-                        best_choice = (candidate_route.cost, vehicle, position)
+                        best_choice = (
+                            candidate_route.cost,
+                            vehicle,
+                            list(candidate_jobs),
+                            list(candidate_activities),
+                        )
             if best_choice is None:
                 unassigned.append(job)
                 continue
-            _, vehicle, position = best_choice
-            route_jobs[vehicle.id].insert(position, job)
+            _, vehicle, chosen_jobs, chosen_activities = best_choice
+            route_jobs[vehicle.id] = chosen_jobs
+            route_activities[vehicle.id] = chosen_activities
+
         finalized_routes = []
         for vehicle in problem.vehicles:
             jobs_for_vehicle = tuple(route_jobs.get(vehicle.id, []))
             if not jobs_for_vehicle:
                 continue
-            route = evaluate_route(problem, vehicle, jobs_for_vehicle, registrations)
+            planned_activities = tuple(route_activities.get(vehicle.id, []))
+            route = evaluate_route(
+                problem,
+                vehicle,
+                jobs_for_vehicle,
+                registrations,
+                planned_activities=planned_activities,
+            )
             if route is None:
                 unassigned.extend(jobs_for_vehicle)
                 continue
@@ -320,7 +411,9 @@ class SearchStrategy:
         registrations: tuple[ConstraintRegistration, ...],
     ) -> VehicleRoutingProblemSolution:
         seeded_assignments, ruined_jobs = self.ruin.ruin(current_solution)
-        pending_jobs = tuple(job for job in current_solution.unassigned_jobs if isinstance(job, Service))
+        pending_jobs = tuple(
+            job for job in current_solution.unassigned_jobs if _is_executable_job(job)
+        )
         return self.insertion.insert_jobs(
             problem=problem,
             seeded_assignments=seeded_assignments,
@@ -393,6 +486,9 @@ def _is_initial_solution_consistent(
             route_job_ids.add(job.id)
             if job.id not in known_job_ids:
                 return False
+        for activity in route.activities:
+            if activity.job.id not in known_job_ids:
+                return False
     unassigned_ids = {job.id for job in initial_solution.unassigned_jobs}
     return route_job_ids.isdisjoint(unassigned_ids)
 
@@ -423,7 +519,9 @@ def build_search_technical_log(
                 candidate_route_count=len(candidate.routes),
                 accepted_as_incumbent=accepted_as_incumbent,
                 incumbent_cost_after_iteration=incumbent.cost,
-                incumbent_unassigned_job_count_after_iteration=len(incumbent.unassigned_jobs),
+                incumbent_unassigned_job_count_after_iteration=len(
+                    incumbent.unassigned_jobs
+                ),
                 incumbent_route_count_after_iteration=len(incumbent.routes),
             )
         )
@@ -462,30 +560,57 @@ def build_greedy_initial_solution(
     registrations: tuple[ConstraintRegistration, ...],
 ) -> VehicleRoutingProblemSolution:
     insertion = BestInsertion()
-    jobs = tuple(job for job in problem.jobs if isinstance(job, Service))
-    seeded_assignments = tuple((vehicle, tuple()) for vehicle in problem.vehicles)
+    jobs = tuple(job for job in problem.jobs if _is_executable_job(job))
+    seeded_assignments = tuple(
+        SeededRouteAssignment(vehicle=vehicle, jobs=(), planned_activities=())
+        for vehicle in problem.vehicles
+    )
     return insertion.insert_jobs(problem, seeded_assignments, jobs, registrations)
 
 
 def evaluate_route(
     problem: VehicleRoutingProblem,
     vehicle: Vehicle,
-    jobs: tuple[Service, ...],
+    jobs: tuple[Job, ...],
     registrations: tuple[ConstraintRegistration, ...],
+    planned_activities: tuple[PlannedActivitySpec, ...] | None = None,
 ) -> VehicleRoute | None:
+    normalized_activities = _normalize_planned_activities(jobs, planned_activities)
+    if normalized_activities is None:
+        return None
+
     current_location = vehicle.start_location
     current_time = vehicle.earliest_start
     total_cost = 0.0
     used_capacity = Capacity()
+    counted_capacity_job_ids: set[str] = set()
+    seen_pickups: set[str] = set()
     activities: list[TourActivity] = []
-    for position, job in enumerate(jobs):
+
+    for position, planned_activity in enumerate(normalized_activities):
+        job = planned_activity.job
         if not vehicle.skills.contains(job.required_skills):
             return None
-        used_capacity = used_capacity.add(job.demand)
-        if not vehicle.vehicle_type.capacity.fits(used_capacity):
-            return None
-        travel_time = problem.transport_cost.travel_time(current_location, job.location)
-        travel_cost = problem.transport_cost.travel_cost(current_location, job.location)
+        if planned_activity.activity_kind is TourActivityKind.DELIVERY:
+            if job.id not in seen_pickups:
+                return None
+        else:
+            if job.id not in counted_capacity_job_ids:
+                used_capacity = used_capacity.add(job.demand)
+                counted_capacity_job_ids.add(job.id)
+                if not vehicle.vehicle_type.capacity.fits(used_capacity):
+                    return None
+            if planned_activity.activity_kind is TourActivityKind.PICKUP:
+                seen_pickups.add(job.id)
+
+        travel_time = problem.transport_cost.travel_time(
+            current_location,
+            planned_activity.location,
+        )
+        travel_cost = problem.transport_cost.travel_cost(
+            current_location,
+            planned_activity.location,
+        )
         arrival_time = current_time + travel_time
         service_start_time = max(arrival_time, job.time_window.start)
         if service_start_time > job.time_window.end:
@@ -501,6 +626,8 @@ def evaluate_route(
         activities.append(
             TourActivity(
                 job=job,
+                activity_kind=planned_activity.activity_kind,
+                location=planned_activity.location,
                 arrival_time=arrival_time,
                 service_start_time=service_start_time,
                 service_end_time=service_end_time,
@@ -508,7 +635,8 @@ def evaluate_route(
             )
         )
         current_time = service_end_time
-        current_location = job.location
+        current_location = planned_activity.location
+
     end_location = vehicle.end_location or vehicle.start_location
     return_travel_time = problem.transport_cost.travel_time(current_location, end_location)
     return_travel_cost = problem.transport_cost.travel_cost(current_location, end_location)
@@ -598,3 +726,108 @@ def build_solution(
         unassigned_jobs=unassigned_jobs,
         cost=total_cost,
     )
+
+
+def _is_executable_job(job: Job) -> bool:
+    return isinstance(job, (Service, Shipment))
+
+
+def _default_planned_activities(
+    jobs: tuple[Job, ...],
+) -> tuple[PlannedActivitySpec, ...] | None:
+    planned_activities: list[PlannedActivitySpec] = []
+    for job in jobs:
+        activity_specs = _activity_specs_for_job(job)
+        if activity_specs is None:
+            return None
+        planned_activities.extend(activity_specs)
+    return tuple(planned_activities)
+
+
+def _normalize_planned_activities(
+    jobs: tuple[Job, ...],
+    planned_activities: tuple[PlannedActivitySpec, ...] | None,
+) -> tuple[PlannedActivitySpec, ...] | None:
+    normalized = planned_activities or _default_planned_activities(jobs)
+    if normalized is None:
+        return None
+    expected = _default_planned_activities(jobs)
+    if expected is None:
+        return None
+    if Counter(_activity_identity(activity) for activity in normalized) != Counter(
+        _activity_identity(activity) for activity in expected
+    ):
+        return None
+    return normalized
+
+
+def _activity_identity(activity: PlannedActivitySpec) -> tuple[str, TourActivityKind]:
+    return (activity.job.id, activity.activity_kind)
+
+
+def _activity_specs_for_job(job: Job) -> tuple[PlannedActivitySpec, ...] | None:
+    if isinstance(job, Service):
+        return (
+            PlannedActivitySpec(
+                job=job,
+                activity_kind=TourActivityKind.SERVICE,
+                location=job.location,
+            ),
+        )
+    if isinstance(job, Shipment):
+        if job.delivery_location is None:
+            return None
+        return (
+            PlannedActivitySpec(
+                job=job,
+                activity_kind=TourActivityKind.PICKUP,
+                location=job.location,
+            ),
+            PlannedActivitySpec(
+                job=job,
+                activity_kind=TourActivityKind.DELIVERY,
+                location=job.delivery_location,
+            ),
+        )
+    return None
+
+
+def _iter_planned_insertions(
+    current_activities: tuple[PlannedActivitySpec, ...],
+    job: Job,
+) -> tuple[tuple[PlannedActivitySpec, ...], ...]:
+    activity_specs = _activity_specs_for_job(job)
+    if activity_specs is None:
+        return ()
+    if len(activity_specs) == 1:
+        activity = activity_specs[0]
+        return tuple(
+            tuple(
+                [
+                    *current_activities[:position],
+                    activity,
+                    *current_activities[position:],
+                ]
+            )
+            for position in range(len(current_activities) + 1)
+        )
+
+    pickup, delivery = activity_specs
+    candidates: list[tuple[PlannedActivitySpec, ...]] = []
+    for pickup_position in range(len(current_activities) + 1):
+        with_pickup = (
+            *current_activities[:pickup_position],
+            pickup,
+            *current_activities[pickup_position:],
+        )
+        for delivery_position in range(pickup_position + 1, len(with_pickup) + 1):
+            candidates.append(
+                tuple(
+                    [
+                        *with_pickup[:delivery_position],
+                        delivery,
+                        *with_pickup[delivery_position:],
+                    ]
+                )
+            )
+    return tuple(candidates)

@@ -8,6 +8,7 @@ from py_sprit.domain.algorithm_execution import (
     SearchExecutionService,
     SearchStartPolicy,
     TerminationCriterion,
+    TourActivityKind,
     build_search_technical_log,
 )
 from py_sprit.infrastructure.gateways import InMemoryExtensionContractsRegistryGateway
@@ -26,7 +27,10 @@ def test_search_start_policy_accepts_defined_problem(runtime):
 
 
 def test_best_solution_selection_rejects_all_unassigned_candidates():
-    definition = define_problem(__import__("py_sprit.bootstrap", fromlist=["create_runtime"]).create_runtime(), **make_problem_inputs(vehicle_capacity=0))
+    definition = define_problem(
+        __import__("py_sprit.bootstrap", fromlist=["create_runtime"]).create_runtime(),
+        **make_problem_inputs(vehicle_capacity=0),
+    )
     service = SearchExecutionService(
         rng=Random(1),
         registry_gateway=InMemoryExtensionContractsRegistryGateway(),
@@ -54,6 +58,30 @@ def test_search_execution_service_returns_solution_with_unassigned_jobs(runtime)
     assert best is not None
     assert len(best.routes) == 1
     assert len(best.unassigned_jobs) == 1
+
+
+def test_search_execution_builds_pickup_and_delivery_activities_for_shipment(runtime):
+    definition = define_problem(runtime, **make_problem_inputs(job_count=0, include_shipment=True))
+    service = SearchExecutionService(
+        rng=Random(4),
+        registry_gateway=InMemoryExtensionContractsRegistryGateway(),
+    )
+
+    candidates = service.run(
+        problem=definition.problem,
+        termination_criterion=TerminationCriterion(max_iterations=2),
+        initial_solution=None,
+    )
+
+    best = BestSolutionSelectionService().select(candidates)
+
+    assert best is not None
+    assert len(best.routes) == 1
+    assert best.routes[0].jobs[0].id == "shipment-1"
+    assert [activity.activity_kind for activity in best.routes[0].activities] == [
+        TourActivityKind.PICKUP,
+        TourActivityKind.DELIVERY,
+    ]
 
 
 def test_build_search_technical_log_records_iteration_count(runtime):

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from py_sprit.domain.solution_visualization import (
     RouteAnnotationGenerationResult,
@@ -70,6 +70,24 @@ def test_route_annotation_entries_follow_activity_order(runtime):
     )
 
 
+def test_route_visualization_labels_shipment_pickup_and_delivery(runtime):
+    solution = make_solution(runtime, **make_problem_inputs(job_count=0, include_shipment=True))
+
+    route_map = runtime.solution_visualization.generate_route_map(solution=solution)
+    assert route_map.is_success is True
+    assert route_map.generated_route_map is not None
+    assert "shipment-1 pickup" in route_map.generated_route_map.content
+    assert "shipment-1 delivery" in route_map.generated_route_map.content
+
+    annotation = runtime.solution_visualization.generate_route_annotation(solution=solution)
+    assert annotation.is_success is True
+    assert annotation.generated_route_annotation is not None
+    assert annotation.generated_route_annotation.entries == (
+        "vehicle-1 stop 1: shipment-1 pickup",
+        "vehicle-1 stop 2: shipment-1 delivery",
+    )
+
+
 def test_return_visualization_artifact_fails_without_generated_artifact(runtime):
     result = runtime.solution_visualization.return_visualization_artifact(
         VisualizationArtifactGenerationResult(
@@ -104,4 +122,3 @@ def test_return_route_annotation_fails_without_generated_route_annotation(runtim
         )
     )
     assert result.is_success is False
-

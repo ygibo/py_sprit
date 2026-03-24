@@ -7,6 +7,7 @@ from math import isfinite
 
 from py_sprit.domain.algorithm_execution import (
     TourActivity,
+    TourActivityKind,
     VehicleRoute,
     VehicleRoutingProblemSolution,
 )
@@ -565,7 +566,7 @@ def _has_finite_locations(routes: tuple[VehicleRoute, ...]) -> bool:
     locations: list[Location] = []
     for route in routes:
         locations.append(route.vehicle.start_location)
-        locations.extend(activity.job.location for activity in route.activities)
+        locations.extend(activity.location for activity in route.activities)
         if route.vehicle.end_location is not None:
             locations.append(route.vehicle.end_location)
     return bool(locations) and all(
@@ -587,7 +588,10 @@ def _build_route_annotation_entries(
                 and isfinite(activity.service_end_time)
             ):
                 return ()
-            line = f"{route.vehicle.id} stop {activity.position + 1}: {activity.job.id}"
+            line = (
+                f"{route.vehicle.id} stop {activity.position + 1}: "
+                f"{_activity_label(activity)}"
+            )
             if show_timestamps:
                 line += (
                     f" arrival={activity.arrival_time:.2f}"
@@ -661,7 +665,7 @@ def _render_solution_svg(
     for index, route in enumerate(routes):
         color = palette[index % len(palette)]
         path_locations = [route.vehicle.start_location]
-        path_locations.extend(activity.job.location for activity in route.activities)
+        path_locations.extend(activity.location for activity in route.activities)
         if route.vehicle.end_location is not None:
             path_locations.append(route.vehicle.end_location)
         points = [scale(location) for location in path_locations]
@@ -681,12 +685,12 @@ def _render_solution_svg(
             )
 
         for activity in route.activities:
-            x, y = scale(activity.job.location)
+            x, y = scale(activity.location)
             parts.append(
                 f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4.5" fill="{color}" stroke="white" stroke-width="1" />'
             )
             if options.show_labels:
-                label = f"{activity.position + 1}:{activity.job.id}"
+                label = f"{activity.position + 1}:{_activity_label(activity)}"
                 parts.append(
                     f'<text x="{x + 6:.2f}" y="{y - 6:.2f}" font-size="11" font-family="sans-serif" fill="#111827">{escape(label)}</text>'
                 )
@@ -713,7 +717,15 @@ def _collect_route_locations(routes: tuple[VehicleRoute, ...]) -> tuple[Location
     locations: list[Location] = []
     for route in routes:
         locations.append(route.vehicle.start_location)
-        locations.extend(activity.job.location for activity in route.activities)
+        locations.extend(activity.location for activity in route.activities)
         if route.vehicle.end_location is not None:
             locations.append(route.vehicle.end_location)
     return tuple(locations)
+
+
+def _activity_label(activity: TourActivity) -> str:
+    if activity.activity_kind is TourActivityKind.PICKUP:
+        return f"{activity.job.id} pickup"
+    if activity.activity_kind is TourActivityKind.DELIVERY:
+        return f"{activity.job.id} delivery"
+    return activity.job.id

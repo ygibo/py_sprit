@@ -93,6 +93,14 @@ EXAMPLES = [
             "RouteAnnotation:",
         ),
     ),
+    (
+        "run_shipment_vrp_sample.py",
+        (
+            "== Search Execution ==",
+            "shipment-1 pickup: arrival=",
+            "shipment-1 delivery: arrival=",
+        ),
+    ),
 ]
 
 

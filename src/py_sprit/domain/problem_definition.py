@@ -134,8 +134,10 @@ class VehicleRoutingProblem:
         )
 
     @property
-    def supported_jobs(self) -> tuple[Service, ...]:
-        return tuple(job for job in self.jobs if isinstance(job, Service))
+    def supported_jobs(self) -> tuple[Job, ...]:
+        return tuple(
+            job for job in self.jobs if isinstance(job, (Service, Shipment))
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,10 +178,15 @@ class ProblemModelCompletenessValidator:
         unsupported_job_types = [
             job.job_type
             for job in problem.jobs
-            if not isinstance(job, (Service, Break))
+            if not isinstance(job, (Service, Shipment, Break))
         ]
         if unsupported_job_types:
-            missing.append("supported Service jobs only")
+            missing.append("supported Service/Shipment jobs only")
+        if any(
+            isinstance(job, Shipment) and job.delivery_location is None
+            for job in problem.jobs
+        ):
+            missing.append("Shipment.delivery_location")
         if problem.transport_cost is None:
             missing.append("TransportCost")
         if problem.activity_costs is None:
@@ -233,6 +240,14 @@ class ProblemModelConsistencyValidator:
                 checked_components=("Job",),
                 reason="問題モデル不整合",
             )
+        for job in problem.jobs:
+            if isinstance(job, Shipment) and job.delivery_location is None:
+                return ProblemConsistencyResult(
+                    is_success=False,
+                    next_state=problem,
+                    checked_components=("Job",),
+                    reason="Shipment.delivery_location が未定義である",
+                )
         if problem.breaks and problem.fleet_size is FleetSize.INFINITE:
             return ProblemConsistencyResult(
                 is_success=False,
